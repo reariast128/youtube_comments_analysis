@@ -1,35 +1,34 @@
-from tkinter import ttk
+from tkinter import ttk, Tk
 from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg, NavigationToolbar2Tk)
 from matplotlib.figure import Figure
 import urllib.request
 from PIL import ImageTk, Image
 import io
-import data_transformation
+from data_transformation import DataTransformations
 import conections
 import threading
 from utils import Cache
 import datetime
 from queue import Queue, Empty
 
-class PltAndTkPlots():
+class Plots():
     '''This module works with comments_json structure.
     root: Parent frame to draw the plots.'''
 
     def __init__(self, root, comments_data) -> None:
         self.root = root
-        self.comments_data = comments_data
+        self.data = DataTransformations(comments_data)
 
-    def _video_comments_over_time(self, frame) -> None:
+    def video_comments_over_time(self, frame) -> None:
         # obtain data to plot 
-        data_handler = data_transformation.DataTransformations(self.comments_data)
-        data = data_handler.comments_over_time()
+        comments_over_time = self.data.comments_over_time()
 
         # create a figure with an specific size and resolution
         fig = Figure(figsize=(12, 7), dpi=100)
 
         # create a subplot to the figure and draw the plot
         subplot = fig.add_subplot(111)
-        subplot.plot(data['date'], data['count'])
+        subplot.plot('date', 'count', data=comments_over_time)
         subplot.set_title("Video comments over time")
         subplot.xaxis.set_tick_params(rotation=45)
 
@@ -47,10 +46,9 @@ class PltAndTkPlots():
         # draw toolkit in the bottom of the frame
         NavigationToolbar2Tk(canvas, toolbar_subframe)
     
-    def _video_sentiments_over_time(self, frame):
+    def video_sentiments_over_time(self, frame):
         # obtain data
-        data_handler = data_transformation.DataTransformations(self.comments_data)
-        sentiments = data_handler.sentiment_across_time()
+        sentiments = self.data.sentiment_across_time()
 
         # create the figure that contains the plot
         fig = Figure(figsize=(12, 7), dpi=100)
@@ -84,9 +82,8 @@ class PltAndTkPlots():
         # draw toolkit in the bottom of the frame
         NavigationToolbar2Tk(canvas, toolbar_subframe)
     
-    def _video_sentiment_count(self, frame):
-        data_handler = data_transformation.DataTransformations(self.comments_data)
-        sentiments_count = data_handler.count_sentiments()
+    def video_sentiment_count(self, frame):
+        sentiments_count = self.data.count_sentiments()
 
         fig = Figure(figsize=(12, 7), dpi=100)
         subplot = fig.add_subplot(111)
@@ -110,42 +107,45 @@ class PltAndTkPlots():
         # draw toolkit in the bottom of the frame
         NavigationToolbar2Tk(canvas, toolbar_subframe)
 
-class PlotDrawer(PltAndTkPlots):
+class PlotsDrawer(Plots):
+    '''Class to draw the Plots into a Notebook Mainframe.'''
 
     def __init__(self, root, comments_data) -> None:
         super().__init__(root, comments_data)
 
-    def draw_plots(self, notebook_parent_frame: ttk.Notebook):
-        _video_comments_over_time_frame = ttk.Frame(notebook_parent_frame)
-        self._video_comments_over_time(_video_comments_over_time_frame)
+    def draw_plots(self, notebook_parent_frame: ttk.Notebook) -> None:
+        video_comments_over_time_frame = ttk.Frame(notebook_parent_frame)
+        self.video_comments_over_time(video_comments_over_time_frame)
         
-        _video_sentiment_count_frame = ttk.Frame(notebook_parent_frame)
-        self._video_sentiment_count(_video_sentiment_count_frame)
+        video_sentiment_count_frame = ttk.Frame(notebook_parent_frame)
+        self.video_sentiment_count(video_sentiment_count_frame)
 
-        _video_sentiments_over_time_frame = ttk.Frame(notebook_parent_frame)
-        self._video_sentiments_over_time(_video_sentiments_over_time_frame)
+        video_sentiments_over_time_frame = ttk.Frame(notebook_parent_frame)
+        self.video_sentiments_over_time(video_sentiments_over_time_frame)
 
-        notebook_parent_frame.add(_video_comments_over_time_frame, text="Comments over time")
-        notebook_parent_frame.add(_video_sentiment_count_frame, text="Sentiments count")
-        notebook_parent_frame.add(_video_sentiments_over_time_frame, text="Sentiments over time")
+        notebook_parent_frame.add(video_comments_over_time_frame, text="Comments over time")
+        notebook_parent_frame.add(video_sentiment_count_frame, text="Sentiments count")
+        notebook_parent_frame.add(video_sentiments_over_time_frame, text="Sentiments over time")
 
 
-class gui_builder():
+        
+class gui_builder:
 
     def __init__(self, API_KEY) -> None:
-        self.root = ttk.Tk()
+        self.root = Tk()
         self.video_id_str = ttk.StringVar()
         self.queue = Queue()
         self.video_thumbnail = None
         self.API_KEY = API_KEY
 
-    def check_queue(self):
+    def check_queue(self) -> None:
         try:
-            # Intentar obtener datos de la cola
+            # trying to get info from queue
             comments, video_info = self.queue.get_nowait()
             self.draw_video_info_and_stats(video_info)
             self.draw_mainframe(comments)
         except Empty:
+            # if queue is empty, check after a short time
             # Si la cola está vacía, volver a comprobar después de un corto retraso
             self.root.after(100, self.check_queue)
 
@@ -193,7 +193,7 @@ class gui_builder():
         plot_notebook = ttk.Notebook(self.root)
 
         # draw plots
-        PlotDrawer(self.root, comments_data).draw_plots(plot_notebook)
+        PlotsDrawer(self.root, comments_data).draw_plots(plot_notebook)
         plot_notebook.grid(row=0, column=0, padx=10)
 
     def load_plots_info(self):
