@@ -3,13 +3,30 @@ import googleapiclient.discovery
 import requests
 from transformers import pipeline
 from tqdm import tqdm
-import json
-from utils import ReadApiKeys
+from utils import ReadApiKeys, Cache
 
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
-class ApiHandle:
-    '''ApiHandle contains necesary functions to connnect with YouTube and Hugging Face API.
+class SentimentAnalyzer:
+
+    text_perception_analyzer = pipeline(
+        model="lxyuan/distilbert-base-multilingual-cased-sentiments-student", 
+        top_k=1
+        )
+
+    def get_sentiment_from_text(self, text: str) -> str:
+        '''Uses lxyuan/distilbert-base-multilingual-cased-sentiments-student to get the perception of a text. This can be ``positive``, ``neutral`` or ``negative``
+        Returns the label of the text's principal sentiment.'''
+
+        # pass the text to the model to get a response
+        response = self.text_perception_analyzer(text)
+
+        # return the label of the top 1 sentiment
+        return response[0][0]['label']
+
+
+class YoutubeConnection:
+    '''ApiHandle contains necessary functions to connect with YouTube and Hugging Face API.
     which are used in analysis functions in this exercise.
     
     YOUTUBE_API_KEY: YouTube API key.
@@ -17,22 +34,6 @@ class ApiHandle:
 
     def __init__(self, YOUTUBE_API_KEY: str) -> None:
         self.YOUTUBE_API_KEY = YOUTUBE_API_KEY
-    
-    def get_sentiment_from_text(self, text: str) -> str:
-        '''Uses lxyuan/distilbert-base-multilingual-cased-sentiments-student to get the perception of a text. This can be ``positive``, ``neutral`` or ``negative``
-        Returns the label of the text's principal sentiment.'''
-
-        # build the pipeline
-        model = pipeline(
-            model="lxyuan/distilbert-base-multilingual-cased-sentiments-student", 
-            top_k=1
-        )
-
-        # pass the text to the model to get a response
-        response = model(text)
-
-        # return the label of the top 1 sentiment
-        return response[0][0]['label']
 
     def fetch_youtube_video_comments(self, video_ID: str, page_token: str = '') -> dict:
         '''Get the comments JSON of a YouTube video using googleapiclient.
@@ -55,14 +56,14 @@ class ApiHandle:
             response = request.execute() # type: ignore
             if 'error' in response.keys():
                 raise
+
             else:
                 print(f"Request id {response['etag']} was executed sucessfully.")
                 return response
             
         except googleapiclient.discovery.HttpError as error:
-            error_reason = error.reason
             print(f"Error in YouTube connection.")
-            print(f"Reason: {error_reason}")
+            print(f"Reason: {error.reason}")
             raise
 
     def fetch_youtube_video_info(self, video_ID: str) -> dict:
@@ -97,9 +98,12 @@ class ApiHandle:
             error_reason = error.error_details
             print(f"Error in YouTube connection.")
             print(f"Reason: {error_reason}")
-            raise 
+            raise
 
-    def extract_comment_text_and_date(self, youtube_response_json: list) -> list[dict]:
+
+    
+class DataCleaner:
+    def extract_comment_text_and_date(self, youtube_response_json: list) -> list[dict[str, str]]:
             '''Returns a json-like list with relevant data of the YouTube's response list.
             Returns a list like this:
                 [
@@ -111,72 +115,109 @@ class ApiHandle:
                 ]
             response_list: List with YouTube's response.'''
 
-            comments = []
-            for response in youtube_response_json:
-                for comment in response['items']:
-                    data = {
-                        'text': comment['snippet']['topLevelComment']['snippet']['textDisplay'],
-                        'date': comment['snippet']['topLevelComment']['snippet']['updatedAt']
-                    }
-                    comments.append(data)
+            comments = [
+                {
+                    'text': comment['snippet']['topLevelComment']['snippet']['textDisplay'], 
+                    'date': comment['snippet']['topLevelComment']['snippet']['updatedAt']
+                } 
+                for response in youtube_response_json for comment in response
+                ]
 
             return comments
     
-class AnalysisHandle():
-
-    def __init__(self, YOUTUBE_API_KEY: str):
-        self.handler = ApiHandle(YOUTUBE_API_KEY)
-    
-    def fetch_youtube_video_comments_with_sentiments(self, video_id: str) -> list[dict]:
-        '''Get all comments from the `video_id` video, returning a dict like this:
-        [
-            {
-                'text': comment['snippet']['topLevelComment']['snippet']['textDisplay'],
-                'date': comment['snippet']['topLevelComment']['snippet']['updatedAt'],
-                'emotion': get_sentiment_from_text(list[comment_index]['text'])
-            },
-            ...
-        ]'''
-        
-        video_youtube_comments_json = self.handler.fetch_all_youtube_video_comments(video_id)
-        video_youtube_comments_json = self.handler.extract_comment_text_and_date(video_youtube_comments_json)
-
-        # checking if video_youtube_comments_json has more than 10000 comments and raises a warning
-        if len(video_youtube_comments_json) > 10000:
-            print("WARNING: video_youtube_comments_json has more than 10000 records. The first 10000 records will be parsed.")
-            video_youtube_comments_json = video_youtube_comments_json[:10000]
-
-        # trying to get all comments sentiment
-        print("Trying to get all comments sentiment")
-        for comment in tqdm(range(0, len(video_youtube_comments_json))):
-            if len(video_youtube_comments_json[comment]['text']) > 511:
-                continue
-            else:
-                video_youtube_comments_json[comment]['sentiment'] = self.handler.get_sentiment_from_text(video_youtube_comments_json[comment]['text'])
-
-        return video_youtube_comments_json
-    
-    def fetch_video_info_and_stats(self, video_id: str) -> dict:
-        response = self.handler.fetch_youtube_video_info(video_id)
-
+    def extract_video_relevant_info(self, video_info_response_json: dict) -> dict[str, str]:
         video_info = {
-            'thumbnail_url': response['items'][0]['snippet']['thumbnails']['high']['url'],
-            'video_title': response['items'][0]['snippet']['title'],
-            'channel_name': response['items'][0]['snippet']['channelTitle'],
-            'video_url': r''.join(("http://youtu.be/", video_id)),
-            'views': response['items'][0]['statistics']['viewCount'],
-            'likes': response['items'][0]['statistics']['likeCount'],
-            'published_date': response['items'][0]['snippet']['publishedAt'] 
+            'thumbnail_url': video_info_response_json['items'][0]['snippet']['thumbnails']['high']['url'],
+            'video_title': video_info_response_json['items'][0]['snippet']['title'],
+            'channel_name': video_info_response_json['items'][0]['snippet']['channelTitle'],
+            'video_url': "youtu.be/"+video_info_response_json['items'][0]["id"],
+            'views': video_info_response_json['items'][0]['statistics']['viewCount'],
+            'likes': video_info_response_json['items'][0]['statistics']['likeCount'],
+            'published_date': video_info_response_json['items'][0]['snippet']['publishedAt'] 
         }     
 
         return video_info
+    
+
+    
+class CommentLengthChecker:
+
+    def check_if_comments_list_length_is_too_long(self, comments_data: list[dict[str, str]]) -> bool:
+        return True if len(comments_data) >= 10000 else False
+    
+    def check_if_comments_length_is_too_long(self, comment) -> bool:
+        return True if len(comment) >= 512 else False
+    
+    def clean_comments_list(self, comments_data: list[dict[str, str]]) -> list[dict[str, str]]:
+        if self.check_if_comments_list_length_is_too_long(comments_data):
+            return comments_data[:10000]
+        
+        else:
+            return comments_data
+
+    def clean_comments_too_long(self) -> list[dict[str, str]]:
+        pass
+
+    
+class CommentAnalyzer:
+    '''This class works with'''
+
+    processed = False
+
+    def __init__(self, comments_data: list[dict[str, str]]) -> None:
+        self.comments_data = comments_data        
+
+    def add_emotions_to_comments_data(self) -> None:
+
+        for comment in tqdm(range(len(0, self.comment_data + 1))):
+            comment['sentiment'] = self.SentimentAnalyzer.get_sentiment_from_text(comment['text'])
+    
+        self.processed = True
+    
+    def get_comments_with_sentiment(self) -> list[dict[str, str]]:
+        if self.processed:
+            return self.comments_data
+        else:
+            self.add_emotions_to_comments_data()
+            self.get_comments_with_sentiment()
+        
+class CommentsOfVideoSentimentAnalyzer:
+
+    sentiment_analyzer = SentimentAnalyzer()
+    data_cleaner = DataCleaner()
+    length_checker = CommentLengthChecker()
+    comments_data = None
+    comments_analyzer = CommentAnalyzer(comments_data)
+    processed = False
+
+    def __init__(self, youtube_connection: YoutubeConnection, video_id: str) -> None:
+        self.youtube_connection = youtube_connection
+        self.video_id = video_id
+
+    def fetch_youtube_video_comments_with_sentiments(self):
+        self.comments_data = self.youtube_connection.fetch_all_youtube_video_comments(self.video_id)
+        self.comments_data = self.data_cleaner.extract_comment_text_and_date(self.comments_data)
+        self.comments_analyzer.comments_data = self.comments_data
+        # Add length checks.
+        self.comments_analyzer.add_emotions_to_comments_data(self.comments_data)
+        self.comments_data = self.comments_analyzer.get_comments_with_sentiment()
+
+        self.processed = True
+
+    def get_comments_data(self):
+        if self.processed:
+            return self.comments_data
+        else:
+            self.fetch_youtube_video_comments_with_sentiments()
+            self.get_comments_data()
 
 if __name__ == '__main__':
 
     YOUTUBE_API_KEY = ReadApiKeys.youtube_api_key()
-    handler = AnalysisHandle(YOUTUBE_API_KEY)
+    youtube_connection = YoutubeConnection(YOUTUBE_API_KEY)
     video_ID = "ZbwV_W9HjnY"
+    handler = CommentsOfVideoSentimentAnalyzer(youtube_connection, video_ID)
 
-    video_info = handler.fetch_youtube_video_comments_with_sentiments(video_ID)
-    with open("videoinfo.json", "+w") as file:
-        json.dump(video_info, file)
+    comments_data = handler.get_comments_data()
+    cache = Cache()
+    cache.create_cache_file(comments_data, video_ID)
